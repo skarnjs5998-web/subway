@@ -35,35 +35,43 @@ def load_data():
     df_subway = None
     df_location = None
 
-    # 1. subway.csv 로드 시도
-    for enc in encodings:
-        try:
-            df_subway_temp = pd.read_csv('subway.csv', encoding=enc, header=None)
-            df_subway_temp.columns = SUBWAY_COLUMNS
-            df_subway = df_subway_temp
-            st.sidebar.success(f"subway.csv 파일이 {enc} 인코딩으로 성공적으로 로드되었습니다.")
-            break
-        except Exception:
-            continue
+    # 파일 이름 및 로드 상태를 저장할 딕셔너리
+    files_to_load = {
+        'subway.csv': {'df': None, 'cols': SUBWAY_COLUMNS, 'is_loaded': False},
+        'subwayLocation.csv': {'df': None, 'cols': LOCATION_COLUMNS, 'is_loaded': False}
+    }
 
-    # 2. subwayLocation.csv 로드 시도
-    for enc in encodings:
-        try:
-            df_location_temp = pd.read_csv('subwayLocation.csv', encoding=enc, header=None)
-            df_location_temp.columns = LOCATION_COLUMNS
-            df_location = df_location_temp
-            st.sidebar.success(f"subwayLocation.csv 파일이 {enc} 인코딩으로 성공적으로 로드되었습니다.")
-            break
-        except Exception:
-            continue
+    # 파일 로드 및 인코딩 시도 (FileNotFoundError를 명시적으로 처리)
+    for filename, data in files_to_load.items():
+        for enc in encodings:
+            try:
+                # FileNotFoundError는 여기서 발생해야 함
+                df_temp = pd.read_csv(filename, encoding=enc, header=None)
+                df_temp.columns = data['cols']  # 수동으로 컬럼 이름 할당
+                data['df'] = df_temp
+                data['is_loaded'] = True
+                st.sidebar.success(f"{filename} 파일이 {enc} 인코딩으로 성공적으로 로드되었습니다.")
+                break
+            except UnicodeDecodeError:
+                # 인코딩 문제면 다음 인코딩으로 넘어감
+                continue
+            except FileNotFoundError:
+                # 파일 경로 오류는 모든 인코딩에서 동일하게 발생하므로, 루프를 중단하고 다음 파일로 이동
+                break
+            except Exception as e:
+                # 다른 예상치 못한 오류 발생 시 경고 후 다음 인코딩 시도
+                st.sidebar.warning(f"{filename} 로드 중 오류 발생 ({enc}): {e}. 다음 인코딩 시도...")
+                continue
 
-    # 최종 검증 및 예외 처리
-    if df_subway is None:
-        st.error("🚨 'subway.csv' 파일을 찾거나 로드할 수 없습니다.")
-        st.stop()
-    if df_location is None:
-        st.error("🚨 'subwayLocation.csv' 파일을 찾거나 로드할 수 없습니다.")
-        st.stop()
+        # 파일 로드에 완전히 실패한 경우, 상세 오류 출력 후 중단
+        if not data['is_loaded']:
+            st.error(f"🚨 '{filename}' 파일을 찾지 못하거나 로드에 실패했습니다.")
+            st.markdown(
+                f"**해결 방법:** `{filename}` 파일이 앱 파일(`subway.py`)과 **같은 디렉토리**에 **정확한 이름**으로 업로드되어 있는지 GitHub 저장소를 확인해 주세요.")
+            st.stop()
+
+    df_subway = files_to_load['subway.csv']['df']
+    df_location = files_to_load['subwayLocation.csv']['df']
 
     # **핵심 수정 부분:** 역 이름 표준화 (경로-위치 데이터 매칭을 위해 괄호 제거)
     df_subway['start_station'] = df_subway['start_station'].apply(clean_station_name)
@@ -157,11 +165,12 @@ def dijkstra_shortest_path(graph, start, end):
 # ----------------------------------------------------
 
 def app():
+    # Streamlit이 앱을 렌더링하도록 유도하는 최소한의 UI 요소는 load_data 호출 전에 있어야 합니다.
     st.set_page_config(page_title="지하철 최단 경로 검색 (다익스트라)", layout="wide")
     st.title("🚇 지하철 최단 경로 검색 앱")
     st.markdown("---")
 
-    # 데이터 로드
+    # 데이터 로드 (여기서 오류가 발생하면 st.error 메시지가 화면에 나타나야 합니다.)
     graph, location_dict, all_stations = load_data()
 
     # 사이드바 (입력)
