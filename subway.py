@@ -10,26 +10,37 @@ from collections import defaultdict
 
 @st.cache_data
 def load_data():
-    """CSV 파일을 로드하고 그래프 구조를 구축합니다."""
+    """
+    CSV 파일을 로드하고 그래프 구조를 구축합니다.
+    KeyError 방지를 위해 'utf-8-sig' 인코딩을 우선 적용합니다.
+    """
     try:
         # subway.csv 로드: 역과 역사이의 시간 정보
-        df_subway = pd.read_csv('subway.csv')
+        # 'utf-8-sig'는 한글 CSV에서 흔한 BOM(Byte Order Mark) 문제를 해결해줍니다.
+        df_subway = pd.read_csv('subway.csv', encoding='utf-8-sig')
 
         # subwayLocation.csv 로드: 역의 경위도 정보
-        df_location = pd.read_csv('subwayLocation.csv')
+        df_location = pd.read_csv('subwayLocation.csv', encoding='utf-8-sig')
 
     except FileNotFoundError:
         st.error("🚨 'subway.csv' 또는 'subwayLocation.csv' 파일을 찾을 수 없습니다. 경로를 확인해 주세요.")
         st.stop()
     except Exception as e:
-        st.error(f"🚨 파일을 읽는 중 오류가 발생했습니다: {e}")
+        # 만약 utf-8-sig로도 실패한다면 다른 인코딩(예: 'cp949', 'euc-kr')을 시도하도록 사용자에게 안내
+        st.error(f"""
+        🚨 파일을 읽는 중 오류가 발생했습니다: {e}
+
+        **💡 해결 가이드:**
+        1. CSV 파일의 컬럼 이름(예: 'start_station', 'time_minutes')에 오타가 없는지 확인하세요.
+        2. 만약 'utf-8-sig'로 해결되지 않았다면, 파일 저장 시 사용된 인코딩(예: 'cp949' 또는 'euc-kr')으로 `encoding` 파라미터를 변경해보세요.
+        """)
         st.stop()
 
     # 1-1. 그래프(인접 리스트) 구축 (양방향 처리)
     # graph = {'A': [('B', 5), ('C', 3)], ...} 형태
     graph = defaultdict(list)
 
-    # 역 간 이동 시간을 양방향으로 그래프에 추가합니다.
+    # DataFrame 컬럼 이름이 확실하게 존재함을 가정하고 접근합니다.
     for _, row in df_subway.iterrows():
         start = row['start_station']
         end = row['end_station']
@@ -60,39 +71,22 @@ def load_data():
 def dijkstra_shortest_path(graph, start, end):
     """
     다익스트라 알고리즘을 사용하여 출발역에서 도착역까지의 최단 시간을 계산합니다.
-
-    Args:
-        graph (dict): 인접 리스트 형태의 그래프
-        start (str): 출발역 이름
-        end (str): 도착역 이름
-
-    Returns:
-        tuple: (최단 시간(float), 최단 경로(list))
     """
     # 1. 초기화
-    # 최단 거리를 저장할 딕셔너리. 초기값은 무한대(infinity)
     distances = {station: float('inf') for station in graph}
     distances[start] = 0
-
-    # 경로를 추적할 딕셔너리
     previous_stations = {station: None for station in graph}
-
-    # 우선순위 큐(Min-Heap) 초기화: (거리, 역) 순서로 저장
-    pq = [(0, start)]
+    pq = [(0, start)]  # 우선순위 큐(Min-Heap) 초기화: (거리, 역) 순서로 저장
 
     while pq:
-        # 현재까지 가장 짧은 거리를 가진 노드(역)을 꺼냄
         current_distance, current_station = heapq.heappop(pq)
 
-        # 이미 처리된 노드이거나, 현재 꺼낸 거리가 이미 저장된 최단 거리보다 길면 무시
         if current_distance > distances[current_station]:
             continue
 
-        # 현재 역과 연결된 모든 이웃 역을 순회
         for neighbor, weight in graph.get(current_station, []):
             distance = current_distance + weight
 
-            # 새로운 경로가 더 짧으면 업데이트
             if distance < distances[neighbor]:
                 distances[neighbor] = distance
                 previous_stations[neighbor] = current_station
@@ -102,17 +96,15 @@ def dijkstra_shortest_path(graph, start, end):
     path = []
     current = end
 
-    # 도착역부터 출발역까지 역순으로 경로를 추적
     while current is not None:
         path.append(current)
         if current == start:
             break
         current = previous_stations.get(current)
 
-    path.reverse()  # 경로를 출발역 -> 도착역 순으로 뒤집음
+    path.reverse()
 
-    # 출발역이 경로의 시작이 아니거나 도착역의 거리가 무한대이면 경로 없음
-    if path[0] != start or distances[end] == float('inf'):
+    if not path or path[0] != start or distances[end] == float('inf'):
         return float('inf'), []
 
     return distances[end], path
@@ -133,7 +125,6 @@ def app():
     # 사이드바 (입력)
     st.sidebar.header("경로 검색")
 
-    # 출발역과 도착역 선택
     start_station = st.sidebar.selectbox("출발역을 선택하세요:", all_stations)
     end_station = st.sidebar.selectbox("도착역을 선택하세요:", all_stations, index=len(all_stations) - 1)
 
@@ -190,15 +181,15 @@ def app():
                         # 다음 역과의 이동 시간
                         next_station = df_path.iloc[i + 1]['station']
                         time_to_next = next(
-                            (time for neighbor, time in graph[row['station']] if neighbor == next_station),
+                            (time for neighbor, time in graph.get(row['station'], []) if neighbor == next_station),
                             None
                         )
-                        map_explanation.append(f"{label} (경유) → 다음역({next_station})까지 {time_to_next}분")
+                        map_explanation.append(f"**{label}** → 다음역({next_station})까지 {time_to_next}분")
                     else:
-                        map_explanation.append(label)
+                        map_explanation.append(f"**{label}**")
 
                 st.markdown("#### 경로 요약")
-                st.markdown("\n\n".join(map_explanation))
+                st.markdown("<br>".join(map_explanation), unsafe_allow_html=True)
 
             else:
                 st.warning("경로에 해당하는 위치 데이터를 찾을 수 없어 지도를 표시할 수 없습니다.")
