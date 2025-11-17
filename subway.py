@@ -2,8 +2,7 @@ import streamlit as st
 import pandas as pd
 import heapq
 from collections import defaultdict
-import re  # 정규 표현식 모듈 추가
-import sys
+import re
 
 
 # 역 이름에서 괄호 안의 내용(노선 번호)을 제거하는 함수
@@ -15,10 +14,9 @@ def clean_station_name(name):
 
 
 # ----------------------------------------------------
-# 1. 데이터 로딩 및 그래프 구축 (CSV 파일에 헤더가 없는 경우 처리)
+# 1. 데이터 로딩 및 그래프 구축 (st.cache_data 제거)
 # ----------------------------------------------------
 
-@st.cache_data
 def load_data():
     """
     CSV 파일을 로드하고 그래프 구조를 구축합니다.
@@ -30,45 +28,52 @@ def load_data():
     LOCATION_COLUMNS = ['station', 'latitude', 'longitude']
 
     # 인코딩 리스트: 가장 흔한 오류 원인을 순서대로 시도
-    encodings = ['utf-8-sig', 'cp949', 'euc-kr']
+    encodings = ['utf-8-sig', 'cp949', 'euc-kr', 'utf-8']  # utf-8 추가
 
     df_subway = None
     df_location = None
 
-    # 파일 이름 및 로드 상태를 저장할 딕셔너리
     files_to_load = {
         'subway.csv': {'df': None, 'cols': SUBWAY_COLUMNS, 'is_loaded': False},
         'subwayLocation.csv': {'df': None, 'cols': LOCATION_COLUMNS, 'is_loaded': False}
     }
 
-    # 파일 로드 및 인코딩 시도 (FileNotFoundError를 명시적으로 처리)
+    # 파일 로드 및 인코딩 시도
     for filename, data in files_to_load.items():
+        found_file = False
+        loaded_successfully = False
+
         for enc in encodings:
             try:
-                # FileNotFoundError는 여기서 발생해야 함
                 df_temp = pd.read_csv(filename, encoding=enc, header=None)
-                df_temp.columns = data['cols']  # 수동으로 컬럼 이름 할당
+
+                # 파일은 찾았지만, 인코딩이 맞지 않아 헤더가 깨질 수 있습니다.
+                # 그러나 header=None으로 강제 할당하므로, 인코딩 오류만 잡습니다.
+                df_temp.columns = data['cols']
+
                 data['df'] = df_temp
                 data['is_loaded'] = True
+                loaded_successfully = True
+                found_file = True
                 st.sidebar.success(f"{filename} 파일이 {enc} 인코딩으로 성공적으로 로드되었습니다.")
-                break
+                break  # 성공했으므로 다음 파일로 이동
             except UnicodeDecodeError:
-                # 인코딩 문제면 다음 인코딩으로 넘어감
-                continue
+                continue  # 인코딩 오류이므로 다음 인코딩 시도
             except FileNotFoundError:
-                # 파일 경로 오류는 모든 인코딩에서 동일하게 발생하므로, 루프를 중단하고 다음 파일로 이동
-                break
+                found_file = False
+                continue  # 파일 경로 오류이므로 다음 인코딩 시도 (Streamlit 환경에서는 경로 문제일 가능성이 가장 높음)
             except Exception as e:
-                # 다른 예상치 못한 오류 발생 시 경고 후 다음 인코딩 시도
-                st.sidebar.warning(f"{filename} 로드 중 오류 발생 ({enc}): {e}. 다음 인코딩 시도...")
+                # 다른 예상치 못한 오류 (예: 컬럼 수가 맞지 않음 등)
+                st.sidebar.warning(f"{filename} 로드 중 예상치 못한 오류 ({enc}): {e}")
                 continue
 
         # 파일 로드에 완전히 실패한 경우, 상세 오류 출력 후 중단
-        if not data['is_loaded']:
-            st.error(f"🚨 '{filename}' 파일을 찾지 못하거나 로드에 실패했습니다.")
+        if not found_file and not loaded_successfully:
+            st.error(f"🚨 [{filename} 로드 실패] 파일을 찾지 못했습니다.")
             st.markdown(
                 f"**해결 방법:** `{filename}` 파일이 앱 파일(`subway.py`)과 **같은 디렉토리**에 **정확한 이름**으로 업로드되어 있는지 GitHub 저장소를 확인해 주세요.")
-            st.stop()
+            # st.stop() 대신 return하여 앱이 안전하게 종료되도록 함
+            return None, None, None
 
     df_subway = files_to_load['subway.csv']['df']
     df_location = files_to_load['subwayLocation.csv']['df']
@@ -91,7 +96,7 @@ def load_data():
             time = float(row['time_minutes'])
         except ValueError:
             st.error(f"🚨 'time_minutes' 컬럼에 숫자가 아닌 값('{row['time_minutes']}')이 포함되어 있습니다. 데이터를 정리해 주세요.")
-            st.stop()
+            return None, None, None
 
         graph[start].append((end, time))
         graph[end].append((start, time))  # 양방향 처리 (시간이 동일하다고 가정)
@@ -106,7 +111,7 @@ def load_data():
             location_dict[station_name] = (lat, lon)
         except ValueError:
             st.error(f"🚨 '{station_name}' 역의 위도/경도 값이 숫자가 아닙니다. 데이터를 정리해 주세요.")
-            st.stop()
+            return None, None, None
 
     # 1-3. 전체 역 목록 (셀렉트 박스에 사용)
     all_stations = sorted(list(graph.keys()))
@@ -172,6 +177,9 @@ def app():
 
     # 데이터 로드 (여기서 오류가 발생하면 st.error 메시지가 화면에 나타나야 합니다.)
     graph, location_dict, all_stations = load_data()
+
+    if graph is None:  # load_data에서 오류로 인해 None을 반환한 경우
+        return  # 앱 종료
 
     # 사이드바 (입력)
     st.sidebar.header("경로 검색")
